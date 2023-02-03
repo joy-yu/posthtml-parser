@@ -11,6 +11,7 @@ export type Options = {
   directives?: Directive[];
   sourceLocations?: boolean;
   recognizeNoValueAttribute?: boolean;
+  simpleDomOnly?: boolean;
 } & ParserOptions;
 
 export type Tag = string | boolean;
@@ -30,15 +31,15 @@ export type Node = NodeText | NodeTag;
 const defaultOptions: ParserOptions = {
   lowerCaseTags: false,
   lowerCaseAttributeNames: false,
-  decodeEntities: false
+  decodeEntities: false,
 };
 
 const defaultDirectives: Directive[] = [
   {
     name: '!doctype',
     start: '<',
-    end: '>'
-  }
+    end: '>',
+  },
 ];
 
 export const parser = (html: string, options: Options = {}): Node[] => {
@@ -129,7 +130,11 @@ export const parser = (html: string, options: Options = {}): Node[] => {
     }
   }
 
-  function onattribute(name: string, value: string, quote?: string | undefined | null) {
+  function onattribute(
+    name: string,
+    value: string,
+    quote?: string | undefined | null
+  ) {
     // Quote: Quotes used around the attribute.
     // `null` if the attribute has no quotes around the value,
     // `undefined` if the attribute has no value.
@@ -146,13 +151,25 @@ export const parser = (html: string, options: Options = {}): Node[] => {
     if (options.sourceLocations) {
       buf.location = {
         start: locationTracker.getPosition(parser.startIndex),
-        end: locationTracker.getPosition(parser.endIndex)
+        end: locationTracker.getPosition(parser.endIndex),
       };
       lastOpenTagEndIndex = parser.endIndex;
     }
 
-    if (Object.keys(attrs).length > 0) {
-      buf.attrs = normalizeArributes(attrs);
+    let handledAttrs = attrs;
+    if (options.simpleDomOnly) {
+      const result: any = {};
+      if (attrs.class) {
+        result.class = attrs.class;
+      }
+      if (attrs.id) {
+        result.id = attrs.id;
+      }
+      handledAttrs = result;
+    }
+
+    if (Object.keys(handledAttrs).length > 0) {
+      buf.attrs = normalizeArributes(handledAttrs);
     }
 
     // Always reset after normalizeArributes
@@ -165,7 +182,12 @@ export const parser = (html: string, options: Options = {}): Node[] => {
   function onclosetag(name: string, isImplied: boolean) {
     const buf: Node | undefined = bufArray.pop();
 
-    if (buf && typeof buf === 'object' && buf.location && parser.endIndex !== null) {
+    if (
+      buf &&
+      typeof buf === 'object' &&
+      buf.location &&
+      parser.endIndex !== null
+    ) {
       if (!isImplied) {
         buf.location.end = locationTracker.getPosition(parser.endIndex);
       } else if (lastOpenTagEndIndex < parser.startIndex) {
@@ -187,6 +209,12 @@ export const parser = (html: string, options: Options = {}): Node[] => {
         }
 
         if (Array.isArray(last.content)) {
+          if (
+            typeof buf === 'object' &&
+            !(buf.attrs || (Array.isArray(buf.content) && buf.content.length))
+          ) {
+            return;
+          }
           last.content.push(buf);
         }
       }
@@ -202,9 +230,16 @@ export const parser = (html: string, options: Options = {}): Node[] => {
     }
 
     if (typeof last === 'object') {
-      if (last.content && Array.isArray(last.content) && last.content.length > 0) {
+      if (
+        last.content &&
+        Array.isArray(last.content) &&
+        last.content.length > 0
+      ) {
         const lastContentNode = last.content[last.content.length - 1];
-        if (typeof lastContentNode === 'string' && !lastContentNode.startsWith('<!--')) {
+        if (
+          typeof lastContentNode === 'string' &&
+          !lastContentNode.startsWith('<!--')
+        ) {
           last.content[last.content.length - 1] = `${lastContentNode}${text}`;
           return;
         }
@@ -220,14 +255,18 @@ export const parser = (html: string, options: Options = {}): Node[] => {
     }
   }
 
-  const parser = new Parser({
+  const handler = {
     onprocessinginstruction,
-    oncomment,
     onattribute,
     onopentag,
     onclosetag,
-    ontext
-  }, { ...defaultOptions, ...options });
+  };
+
+  if (!options.simpleDomOnly) {
+    Object.assign(handler, { oncomment, ontext });
+  }
+
+  const parser = new Parser(handler, { ...defaultOptions, ...options });
 
   parser.write(html);
   parser.end();
